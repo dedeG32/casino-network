@@ -1,25 +1,41 @@
 from deck import Deck, Card
+from server import Server
+import time
+
+GAME_STATES = ("Waiting", "In round")
+MAX_PLAYERS = 100
+
+
 
 class Blackjack:
     def __init__(self):
         self.deck = Deck()
-        self.players = {"Player1":[], "Player2":[]}
-        self.bets = {"Player1": 10, "Player2": 25}
-        self.rules()
+        self.server = Server(game_type = "BlackJack" ,player_allowed=MAX_PLAYERS, rule_function=self.rules)
+
+        self.server.game_state = GAME_STATES[0]
+        #self.rules()
+
+        self.players = dict() #{uuid: bet_amount }         #{"Player1": [], "Player2": []}
+        #self.bets = dict() #{"Player1": 10, "Player2": 25}
+
         self.gameplay_loop()
 
     def rules(self):
-        print('RULES OF THE BLACKJACK')
-        print('Get as close as 21 as you luck can allow.')
-        print('At your turn you can: ')
-        print("\t1. Hit: To draw an additional card")
-        print("\t2. stand: To skip turn if satisfied with card count.")
+        return """
+        RULES OF THE BLACKJACK\n\n
+        Get as close as 21 as your luck can allow.\n
+        At your turn you can: \n
+        \t1. Hit: To draw an additional card.\n
+        \t2. stand: To skip turn if satisfied with card count.\n
+        \n
+        No refund policy! ...\n
+        No splitting. Casino's rules!\n
+        Leaving game for more than 60s will result in automatic loss.\n
+        After input have been requested. You have ~60s to answer. I no input given during that time period this is counted as a forfeit.\n
+        More that 3 time giving an invalid command will result in a forfeit.\n\n
+        """
         #print("\t3. Split: In case of having double the same value card you can split to two hands. (Every additional hand cost same as initial bet)")
 
-        print("\n No refund policy! ...")
-        print("No splitting. Casino's rules!")
-        print("Leaving game for more than 60s will result in automatic loss")
-        print("\n\n")
 
 
 
@@ -74,7 +90,39 @@ class Blackjack:
             if self.bets[player] > 0:
                 print(f"{player}'s receives: {self.bets[player]}")
 
+
+    def pregame(self):
+        self.server.game_state = GAME_STATES[0]
+
+        self.server.in_game_lock.acquire()
+        self.server.in_lobby_lock.acquire()
+
+        self.server.in_game = self.server.in_game + self.server.in_lobby
+        self.server.in_lobby = set()
+
+        self.server.in_game_lock.release()
+        self.server.in_lobby_lock.release()
+
+        wait = 0
+        while wait < 60:
+            time.sleep(10)
+            wait +=10
+            self.server.send_all_in_game(f"Waiting for players. {60-wait}s")
+        self.server.send_all_in_game(f"Game starting...")
+        self.players = dict()
+        for player in self.server.in_game:
+            self.players[player] = 0
+
+        self.server.game_state = GAME_STATES[1]
+
+    def get_bets(self):
+        self.server.send_all_in_game([1,f"How much do you want to bet?: "], True)
+
     def gameplay_loop(self):
+        self.pregame()
+        self.get_bets()
+
+        self.game_state = GAME_STATES[1]
         dealer = [self.deck.draw() , self.deck.draw()] #dealer get two random cards
         print(f"Dealer has drown: {dealer[0]} and one face down.\n")
         self.deal_hands()
@@ -101,6 +149,7 @@ class Blackjack:
 
         self.dealer_turn(dealer)
         self.end_game(dealer)
+        self.game_state = GAME_STATES[0]
 
 
 if __name__ == "__main__":

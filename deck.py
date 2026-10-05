@@ -6,8 +6,8 @@ symbol = ['♠', '♥', '♦', '♣']
 
 class Card:
     def __init__(self, nbr):
-        self.value = nbr%13 +1
-        self.symbol = symbol[nbr//13]
+        self.value = (nbr%13)%4 +1
+        self.symbol = symbol[(nbr//13)%4]
 
     def prefix(self):
         match self.value:
@@ -31,12 +31,13 @@ class Card:
 
 
 class Deck(object):
-    def __init__(self):
-        self.deck = [i for i in range(52)]
+    def __init__(self, nbr_of_decks =1):
+        self.deck = [i for i in range(52*nbr_of_decks)]
+        self.nbr_of_decks = nbr_of_decks
         random.seed(time.time())
 
     def reset_deck(self):
-        self.deck = [i for i in range(52)]
+        self.deck = [i for i in range(52*self.nbr_of_decks)]
         random.seed(time.time())
 
     def shuffle(self):
