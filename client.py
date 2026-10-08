@@ -11,6 +11,7 @@ BUFFER_SIZE = 8192
 
 END_TOKEN = "<[{.o___o.}]>"
 
+DEBUG_CLIENT = True
 
 #local utils to avoid multiple files on client side
 def utils_is_type_number(x):
@@ -22,6 +23,9 @@ def utils_is_int(x):
     except ValueError:
         return False
 
+def utils_is_all_space(x):
+    return all([i==" " for i in x])
+
 
 class Client:
     def __init__(self):
@@ -30,35 +34,43 @@ class Client:
         self.receive_queue = queue.Queue()
 
         self.user_random_input = threading.Event() #random because this is not required input (not requested)
+        self.user_random_input.clear()
 
         self.start_client()
 
+    def loop_receiving(self):
+        while True:
+            self.receiving()
 
     def receiving(self): #get data from client x
-        text = ""
+        text = b""
         end_token = False
         while not end_token:
             text += self.client_socket.recv(BUFFER_SIZE)
             if text[-len(END_TOKEN.encode()):] == END_TOKEN.encode():  # look if the received ends with END_TOKEN token
                 end_token = True
         self.receive_queue.put(text[:-len(END_TOKEN.encode())])
+        if DEBUG_CLIENT: print(f"Client debug (received): {text.decode()}")
 
     def send(self, message):
-        if type(message) != list or type(message) != tuple:
+        if type(message) != list:
             message = [message]
         if message[-1] != END_TOKEN:
             message.append(END_TOKEN)
         for item in message:
-            self.client_socket.sendall(struct.pack(item) if utils_is_type_number(item) else item.encode())
+            if DEBUG_CLIENT: print(f"client debug (send): {item}")
+            self.client_socket.sendall(struct.pack("!I",item) if utils_is_type_number(item) else item.encode())
 
     def get_valid_username(self):
         valid = False
+        user_name= ""
         while not valid:
             valid = True
             user_name = input("What is your username?: ")
-            if utils_is_type_number(user_name[0]):
+            if user_name and utils_is_int(user_name[0]) and not utils_is_all_space(user_name):
                 valid = False
                 print("Username cannot start with a number. Try again.", end=" ")
+        return user_name
 
 
     def get_valid_input(self, input_type):
@@ -78,11 +90,12 @@ class Client:
                 case "2":
                     if utils_is_type_number(result): return result
                     print("Invalid input. Expected a number")
-            return result
+
 
     def treating_queue(self):
         while True:
             message = self.receive_queue.get(block=True)
+            if DEBUG_CLIENT: print(f"Client debug (treating): {struct.unpack("!I", message[:4])}{message[4:].decode()}")
             match struct.unpack('!I',message[:4])[0]:
                 case 1:
                     print(message[4:].decode())
@@ -94,7 +107,11 @@ class Client:
                     self.user_random_input.set()
                 case 3:
                     #print(message[4:].decode(), "3 request sent after connection done") #shouldn't arrive
+                    self.user_random_input.clear()
+                    #self.uuid = message[4:]
+                    print(f"The client uuid {self.uuid}")
                     self.send([3, self.get_valid_username()])
+                    self.user_random_input.set()
                 case 4:
                     continue
                 case _:
@@ -112,15 +129,20 @@ class Client:
             file.write(self.uuid)
 
     def connect(self):
-        self.send([3,self.uuid])
+        print(self.uuid)
+        self.send([3,self.uuid if self.uuid is not None else ""])
 
-        if not uuid:
+        if self.uuid is None or self.uuid == "":
             self.receiving()
-            self.uuid = self.receive_queue.get(True)[4:-len(END_TOKEN.encode())].decode()
+            self.uuid = self.receive_queue.get(True)[4:].decode()
             self.store_uuid()
+            if DEBUG_CLIENT: print(f"Client debug (storing uuid): {self.uuid} stored in ID.dat")
+        self.send([3, self.get_valid_username()])
+        self.user_random_input.set()
 
-        self.receiving()
-        self.treating_queue()
+        #username i assume
+        #self.receiving()
+        #self.treating_queue()
 
 
     def user_input(self, token =1):
@@ -134,7 +156,7 @@ class Client:
 
         self.connect()
 
-        receiving = threading.Thread(target=self.receiving)  # gets new connections
+        receiving = threading.Thread(target=self.loop_receiving)  # gets new connections
 
         treat_received_messages = threading.Thread(target=self.treating_queue)
 
@@ -146,6 +168,7 @@ class Client:
 
         receiving.start()
         treat_received_messages.start()
+        self.user_random_input.wait()
         self.inputing.start()
 
         #client_socket.sendall(text.encode())

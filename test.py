@@ -54,6 +54,8 @@ def utils_is_int(x):
         return int(x) == float(x)
     except ValueError:
         return False
+def empty_str():
+    print(bool("             "))
 if __name__ == "__main__":
     #test_async()
     #print_error()
@@ -62,4 +64,5 @@ if __name__ == "__main__":
     #is_bool()
     #append_tuple()
     #list_addition()
-    print(utils_is_int(1.1))
+    #print(utils_is_int(1.1))
+    empty_str()

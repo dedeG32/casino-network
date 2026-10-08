@@ -3,7 +3,7 @@ import time
 import threading
 from unittest import case
 
-from blackjack import Blackjack
+#from blackjack import Blackjack
 #from traceback import print_tb
 #from xml.dom.domreg import registered
 
@@ -14,6 +14,7 @@ import queue
 
 END_TOKEN = "<[{.o___o.}]>"
 
+DEBUG_SERVER = True
 
 #SERVER_STATES = ("READY", "RUNNING")
 
@@ -21,15 +22,15 @@ END_TOKEN = "<[{.o___o.}]>"
     Server to client message tokens (User != client. client is the local machine script (automatic). User is the person behind the client (human))
     1: print
     2: print and need User input
+        2 0: request string
+        2 1: request int
+        2 2: request number type
     3: need client response. send UUID else blank
     4: need client response. send heart beat check (unsure persistent connection)
     
     Client to server tokens
     1: General chat
     2: return requested input. this requires specification od type of desired input.
-        2 0: request string
-        2 1: request int
-        2 2: request number type
     3: signup process
     4: heart beat check (unsure persistent connection)
 """
@@ -54,6 +55,7 @@ class Server:
         self.host = host
         self.player_allowed = player_allowed
         self.TIMEOUT = TIMEOUT
+        self.server_open = True #keeps connections open
 
         #all the next block serve the same function of handling received messages via different threads(#00000000 mark end of block)
         #tasks received
@@ -85,6 +87,9 @@ class Server:
 
         self.start_server()
 
+    def debug_send(self, what_sent):
+        if DEBUG_SERVER : print(f"debug server (send): {what_sent}")
+
 
     def check_port_availibility(self, port): #thinking about having multiple servers for maybe multiple games
         if port not in Server.server_ports:
@@ -97,7 +102,7 @@ class Server:
         for player in self.clients.keys():
             self.send_to_uuid(player, [2 if response_back else 1, message])
 
-    def send_all_in_game(self, message, response_back = False, timeoutt = 0):
+    def send_all_in_game(self, message, response_back = False, timeoutt = None):
         start_time = time.time()
         response = dict()
         for player in self.in_game:
@@ -109,7 +114,7 @@ class Server:
         if response_back:
             try:
                 while len(response.keys()) < len(self.in_game):  # and not timeout or start_time + timeout < time.time():
-                    self.response_back_event.wait(timout = start_time + timeoutt - time.time())
+                    self.response_back_event.wait(timout = start_time + timeoutt - time.time() if timeoutt is not None else None)
                     response[self.response_back[0]] = self.response_back[1]
                     self.response_back_event.clear()
             except:
@@ -119,35 +124,46 @@ class Server:
             return response
 
 
-
-
-
     def send_all_in_lobby(self, message, response_back = False):
         for player in self.in_game:
             self.send_to_uuid(player, [2 if response_back else 1, message])
 
 
-    def send_to_uuid(self, uuid, message):
+    def send_to_uuid(self, uuid, message, response_back = False):
         self.send_client(self.clients[uuid][0],message)
 
     def send_client(self, connection_socket, message):
-        if type(message) != list or type(message)!= tuple:
+
+        if type(message) != list:
             message = [message]
         if message[-1] != END_TOKEN:
             message.append(END_TOKEN)
         for item in message:
-            connection_socket.sendall(struct.pack(item) if utils.is_type_number(item) else item.encode())
+            #print(item)
+            connection_socket.sendall(struct.pack("!I",item) if utils.is_type_number(item) else item.encode())
+        self.debug_send(message)
 
 
+
+
+
+
+    def move_to_lobby(self, uuid, reason = ""):
+        if uuid in self.in_game:
+            self.in_lobby.add(uuid)
+            self.in_game.remove(uuid)
+        self.send_to_uuid(uuid, f"You have been moved to the lobby. {reason}")
 
     def receiving(self, client_socket): #get data from client x
-        text = ""
-        end_token = False
-        while not end_token:
-            text += client_socket.recv(self.BUFFER_SIZE)
-            if text[-len(END_TOKEN.encode()):] == END_TOKEN.encode():  # look if the received ends with END_TOKEN token
-                end_token = True
-        self.receive_queue.put(text[:-len(END_TOKEN.encode())])
+        while True:
+            text = b""
+            end_token = False
+            while not end_token:
+                text += client_socket.recv(self.BUFFER_SIZE)
+                if text[-len(END_TOKEN.encode()):] == END_TOKEN.encode():  # look if the received ends with END_TOKEN token
+                    end_token = True
+            self.receive_queue.put(text[:-len(END_TOKEN.encode())])
+            if DEBUG_SERVER: print("Server debug (receiving): ",struct.unpack("!I", text[:4]),text[4:].decode())
 
     #before threading
     """def get_player_connections(self, server_socket):
@@ -158,7 +174,7 @@ class Server:
             self.clients[] = connection_socket
             print(f'New client with address {client_addr}')"""
     def ask_user_name(self, client_socket):
-        self.send_client(client_socket, [2,'What is your session username?'])
+        #self.send_client(client_socket, [3,'What is your session username?'])
         self.registering_lock.acquire()
         return self.registering_received
 
@@ -183,11 +199,16 @@ class Server:
                         if self.registering_received.lower() != "yes": 
                             client_socket.close()
                             return"""
+            print(f"self.registering_received: {self.registering_received}, and registered: {registered}")
             uuid = self.database.get_uuid_data(self.registering_received if registered else None)
+
+            #if not registered:
+            print(f"The uuid is {uuid}")
+            self.send_client(client_socket, [3,uuid])
+
             user_name = self.ask_user_name(client_socket)
 
-            if not registered:
-                self.send_client(client_socket, [3,uuid])
+
             if self.game_rules: self.send_client(client_socket,[1,self.game_rules()])
 
             self.in_game_lock.acquire()
@@ -204,7 +225,7 @@ class Server:
 
             self.clients[uuid] = client_socket, user_name, thread
 
-            print(f"Server: {"new" if not registered else ""} User {self.registering_received} logged in as {user_name}")
+            if DEBUG_SERVER: print(f"Server: {'new' if not registered else ''} User {self.registering_received} logged in as {user_name}, with uuid {uuid}")
 
 
     def treating_queue(self):
@@ -216,7 +237,7 @@ class Server:
                 case 2:
                     while self.response_back_event.is_set():
                         continue #wait until response back is consumed by request_user_input()
-                    self.response_back = (request[4:36+4], request[36+4:])   # 4 token, 36 is len of uuid
+                    self.response_back = (request[4:36+4], request[36+4:])   # 4 token, 36 is len of uuid. final (uuid, user_message)
                     if self.ignore[self.response_back[0]] == 0:
                         self.response_back_event.set()
                     elif self.ignore[self.response_back[0]]> 0:
@@ -233,6 +254,8 @@ class Server:
                     print(f"Unrecognized request {struct.unpack('!I',request[:4])[0]} received")
 
 
+    def request_user_input_w_soket(self, user_soket, message, timout = None):
+        pass
 
     def request_user_input(self, uuid, message, timout = None):
         self.send_to_uuid(uuid, message)
@@ -247,20 +270,23 @@ class Server:
 
 
     def start_server(self):
-        with (socket(AF_INET, SOCK_STREAM) as server_socket):
+        #with socket(AF_INET, SOCK_STREAM) as server_socket:
+        server_socket = socket(AF_INET, SOCK_STREAM)
+        self.server_soket = server_socket
+        server_socket.bind((self.host, self.port))
+        server_socket.listen(self.player_allowed)
+        #server_socket.settimeout(self.TIMEOUT)
+        print('Server is ready')  # done with step 1
 
-            server_socket.bind((self.host, self.port))
-            server_socket.listen(self.player_allowed)
-            server_socket.settimeout(self.TIMEOUT)
-            print('Server is ready')  # done with step 1
-
-            #self.get_player_connections(server_socket)
-            connections = threading.Thread(target=self.get_player_connections) #gets new connections
-            #self.receiving(server_socket)
-            #receiving = threading.Thread(target=self.receiving) #Get TCP messages sent by clients
-            treat_received_messages = threading.Thread(target=self.treating_queue)
-            connections.start()
-            treat_received_messages.start()
+        #self.get_player_connections(server_socket)
+        connections = threading.Thread(target=self.get_player_connections, args=[server_socket]) #gets new connections
+        #self.receiving(server_socket)
+        #receiving = threading.Thread(target=self.receiving) #Get TCP messages sent by clients
+        treat_received_messages = threading.Thread(target=self.treating_queue)
+        connections.start()
+        treat_received_messages.start()
+        #while self.server_open:
+            #continue
 
 
 
@@ -270,152 +296,3 @@ class Server:
 
 if __name__ == '__main__':
     server = Server()
-
-"""from socket import socket, AF_INET, SOCK_STREAM 
-# AF_INET is for IPv4
-# SOCK_STREAM is for TCP 
-
-# server socket settings
-HOST = '127.0.0.1' # limits to localhost; set to '0.0.0.0' for any host
-PORT = 12000
-BACKLOG = 3 # pending connection queue size
-
-# connection socket settings
-BUFFER_SIZE = 8192 #8192  # maximum bytes returned by single receive call
-END_TOKEN = "\end"
-
-
-def valid_command(command):
-    if command[0:5].lower() == 'upper':
-        return 1
-    if command[0:5].lower() == 'lower':
-        return 2
-    if command[0:4].lower() == 'echo':
-        return 3
-    if command[0:7].lower() == 'reverse':
-        return 4
-    if command[0:4].lower() == 'quit':
-        return 0
-    else:
-        return 99
-
-
-# STEP 1: create a server socket for clients to make initial connection
-
-with (socket(AF_INET, SOCK_STREAM) as server_socket):
-
-    server_socket.bind((HOST, PORT))
-
-    server_socket.listen(BACKLOG)
-
-    print('Server is ready') # done with step 1
-
-    while True:
-
-        # STEP 2: wait for incoming connection request
-
-        connection_socket, client_addr = server_socket.accept()
-
-        print(f'New client with address {client_addr}')
-
-        with connection_socket:
-            run = True
-
-        # STEP 3: read request from client
-            while run:
-                text = ""
-                end_token = False
-                while not end_token:
-                    text += connection_socket.recv(BUFFER_SIZE).decode()
-                    print(text, " ", text[-4:] == END_TOKEN)
-                    if text[-4:] == END_TOKEN: #look if the received ends with \end token
-                        end_token = True
-
-                print(f"Server debug (received list): {text}")
-                text = text[:-4]
-                print(f"Server debug (remove end_token list): {text}")
-                command_type = valid_command(text[0:7])
-
-                if command_type == 0: #quiting
-                    connection_socket.sendall("Disconnecting from server.".encode())
-                    print(f"Server debug (command type == {command_type})")
-                    connection_socket.sendall(END_TOKEN.encode())
-                    run = False
-                    continue
-                if command_type == 99:
-                    connection_socket.sendall("Insert a valid command.".encode())
-                    print(f"Server debug (command type == {command_type})")
-                    connection_socket.sendall(END_TOKEN.encode())
-                    continue
-
-                i = command_type #to shorten next line
-                text = text[5 if i==1 or i==2 else 4 if i==3 or i==0 else 7:] #removes the command token from text
-                print(f"Server debug (remove command from list): {text}")
-
-                #for line in text:
-                #print("debug server (before modification line): ",line)
-                message = str()
-                match command_type:
-                        case 1:
-                            message = text.upper()
-                        case 2:
-                            message = text.lower()
-                        case 3:
-                            message = text
-                        case 4:
-                            message = text[::-1]
-                print("debug server (after modification line): ", message)
-                connection_socket.sendall(message.encode())
-                connection_socket.sendall(END_TOKEN.encode())
-
-        print("Server debug: Client disconnected. Waiting for new client...")
-
-
-
-"""
-
-
-"""""
-
-with socket(AF_INET, SOCK_DGRAM) as server_socket:
-    server_socket.settimeout(TIMEOUT)
-
-    server_socket.bind((HOST, PORT))
-    print('Server is ready')
-
-    while True:
-
-        # STEP 2: receive a message and the client's address
-        try:
-            message, client_addr = server_socket.recvfrom(BUFFER_SIZE)
-
-            print(f'Message from client with address {client_addr}')
-
-            # STEP 3: convert incoming message to uppercase
-
-            text = message[4:].decode() # converts bytes to string
-            print(f"Server debug full text received: {text}")
-            print(f"Server debug received text without struct: {text}")
-            print(f"Server debug received struct: {struct.unpack('!I',message[:4])}")
-
-            match struct.unpack('!I',message[:4])[0]:
-                case 1:
-                    message = text.upper()
-                case 2:
-                    message = text.lower()
-                case 3:
-                    message = text
-                case 4:
-                    message = text[::-1]
-                case 99:
-                    message = "Please insert valid command at the start of the message"
-                case 0:
-                    message = "See you soon. Goodbye!"
-                case _:
-                    print('Server error: unknown command') #just in case
-
-            server_socket.sendto(message.encode(), client_addr)
-        except TimeoutError:
-            print(f'Server timed out. No data received from client for {TIMEOUT} seconds')
-
-"""

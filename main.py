@@ -13,4 +13,12 @@ def main(name):
 if __name__ == '__main__':
     main()
 
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+
+#add spectator. by sending_all() instead od send_to_in_game().
+#add message to notice start of game for
+
+#handle a uuid being sent but already online
+
+#handle blackjack with no user
+
+#make sure user have balance amount
