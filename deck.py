@@ -2,11 +2,13 @@ import random
 import time
 from unittest import case
 
+
+
 symbol = ['♠', '♥', '♦', '♣']
 
 class Card:
     def __init__(self, nbr):
-        self.value = (nbr%13)%4 +1
+        self.value = (nbr%13)+1
         self.symbol = symbol[(nbr//13)%4]
 
     def prefix(self):
@@ -32,22 +34,25 @@ class Card:
 
 class Deck(object):
     def __init__(self, nbr_of_decks =1):
-        self.deck = [i for i in range(52*nbr_of_decks)]
         self.nbr_of_decks = nbr_of_decks
+        self.deck = [i for i in range(52*nbr_of_decks)]
+        self.shuffle()
         random.seed(time.time())
+        print(f"Deck len = {len(self.deck)}. Deck {self.deck}")
 
     def reset_deck(self):
         self.deck = [i for i in range(52*self.nbr_of_decks)]
         random.seed(time.time())
+        self.shuffle()
 
     def shuffle(self):
         random.shuffle(self.deck)
 
     def draw_next(self):
-        return self.deck.pop(0)
+        return self.deck.pop()
 
     def draw(self):
-        random.seed(time.time())
+        #random.seed(time.time())
         card_nbr = random.choice(self.deck)
         self.deck.remove(card_nbr)
         return Card(card_nbr)

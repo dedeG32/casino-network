@@ -1,3 +1,4 @@
+import uuid
 from socket import socket, AF_INET, SOCK_STREAM
 import time
 import threading
@@ -9,12 +10,18 @@ from unittest import case
 
 from database import Database
 import struct
-import utils
-import queue
+#import utils
+#import queue
 
 END_TOKEN = "<[{.o___o.}]>"
 
 DEBUG_SERVER = True
+
+
+def utils_is_type_number(item):
+    return type(item) is int
+
+
 
 #SERVER_STATES = ("READY", "RUNNING")
 
@@ -22,21 +29,22 @@ DEBUG_SERVER = True
     Server to client message tokens (User != client. client is the local machine script (automatic). User is the person behind the client (human))
     1: print
     2: print and need User input
-        2 0: request string
-        2 1: request int
-        2 2: request number type
     3: need client response. send UUID else blank
     4: need client response. send heart beat check (unsure persistent connection)
     
     Client to server tokens
     1: General chat
     2: return requested input. this requires specification od type of desired input.
+        2 0: request string
+        2 1: request int
+        2 2: request number type
     3: signup process
     4: heart beat check (unsure persistent connection)
 """
 
-BUFFER_SIZE_CST = 8192
-
+BUFFER_SIZE = 8192
+PORT = 12000
+HOST = '0.0.0.0'#'127.0.0.1'
 
 class Server:
     server_ports = set()
@@ -44,126 +52,224 @@ class Server:
     User_connected = set()
     User_connected_lock = threading.Lock()
 
-    def __init__(self, game_type = "BlackJack" ,player_allowed=100, BUFFER_SIZE = BUFFER_SIZE_CST, port=12000, host='127.0.0.1', TIMEOUT = 2, rule_function = None):
-        self.game_type = game_type
+    def __init__(self, player_allowed=100, TIMEOUT = 30, rule_function = None):
         self.game_rules = rule_function
-        #self.game = Blackjack()
         self.game_state = "Waiting"
-        self.check_port_availibility(port)
-        self.port = port
-        self.BUFFER_SIZE = BUFFER_SIZE
-        self.host = host
         self.player_allowed = player_allowed
         self.TIMEOUT = TIMEOUT
-        self.server_open = True #keeps connections open
 
         #all the next block serve the same function of handling received messages via different threads(#00000000 mark end of block)
         #tasks received
-        self.receive_queue = queue.Queue()
-        self.receive_queue_lock = threading.Lock()
-
-
-        #message marked 2
-        self.response_back = None   # (uuid, response)
-        self.response_back_event = threading.Event()
-
-        #Message marked with a 3
-        self.registering_received = None
-        self.registering_lock = threading.Lock()
-        self.registering_lock.acquire()
-        #000000000000000000000
+        #self.receive_queue = queue.Queue()
+        #self.receive_queue_lock = threading.Lock()
 
         self.database = Database() # handles users data long term
 
         #players
-        self.clients = dict()   #has volatile data. stores sockets {uuid: (client_socket, user_name, thread)}. thread is the thread responsible for receiving this user's input
-        self.in_game_lock= threading.Lock()
+        self.clients = dict()   #has volatile data. stores sockets {uuid: [client_socket, thread, user_name]}. thread is the thread responsible for receiving this user's input
         self.in_game = set()   #players in the game
-        self.in_lobby_lock = threading.Lock()
         self.in_lobby = set()   #player waiting for game to end
-
-        self.ignore = dict() # uuid : nbr . nbr stand for how many times to ignore the user. if user take time to answer and program skips. we should ignore the delayed answer
-        #self.disconnected = set() #player that are disconnected in game
 
         self.start_server()
 
-    def debug_send(self, what_sent):
-        if DEBUG_SERVER : print(f"debug server (send): {what_sent}")
+
+    def start_server(self):
+        self.server_socket = socket(AF_INET, SOCK_STREAM)
+
+        self.server_socket.bind((HOST, PORT))
+        self.server_socket.listen(self.player_allowed)
+
+        print('Server is ready')  # done with step 1
+
+        #self.get_player_connections(server_socket)
+        connections = threading.Thread(target=self.get_player_connections, daemon=True) #gets new connections
+        connections.start()
+
+        #self.receiving(server_socket)
+        #receiving = threading.Thread(target=self.receiving) #Get TCP messages sent by clients
+        #treat_received_messages = threading.Thread(target=self.treating_queue)
 
 
-    def check_port_availibility(self, port): #thinking about having multiple servers for maybe multiple games
-        if port not in Server.server_ports:
-            Server.server_ports.add(port)
-        else:
-            print('Port already used')
-            del self
-
-    def send_all(self, message, response_back = False, timeout = None):
-        for player in self.clients.keys():
-            self.send_to_uuid(player, [2 if response_back else 1, message])
-
-    def send_all_in_game(self, message, response_back = False, timeoutt = None):
-        start_time = time.time()
-        response = dict()
-        for player in self.in_game:
-            if type(message) == list:
-                self.send_to_uuid(player, [2 if response_back else 1]+message)
-            else:
-                self.send_to_uuid(player, [2 if response_back else 1, message])
-
-        if response_back:
-            try:
-                while len(response.keys()) < len(self.in_game):  # and not timeout or start_time + timeout < time.time():
-                    self.response_back_event.wait(timout = start_time + timeoutt - time.time() if timeoutt is not None else None)
-                    response[self.response_back[0]] = self.response_back[1]
-                    self.response_back_event.clear()
-            except:
-                for player in self.in_game:
-                    if player not in response.keys():
-                        self.ignore[player] += 1
-            return response
+        #treat_received_messages.isDaemon()
 
 
-    def send_all_in_lobby(self, message, response_back = False):
-        for player in self.in_game:
-            self.send_to_uuid(player, [2 if response_back else 1, message])
+        #treat_received_messages.start()
 
 
-    def send_to_uuid(self, uuid, message, response_back = False):
-        self.send_client(self.clients[uuid][0],message)
+    def get_player_connections(self): #thread that runs forever to get new connections
+        while True:
+            client_socket, client_addr = self.server_socket.accept()
 
-    def send_client(self, connection_socket, message):
+            uuid = self.receive(client_socket)
+            uuid = self.database.is_uuid_else_generate(uuid if uuid else None)
+
+
+            self.send_to_client(client_socket, uuid)
+
+            if uuid in self.in_game:
+                self.clients[uuid][0] = client_socket
+                time.sleep(0.5)
+                continue
+
+            self.clients[uuid] = [client_socket]
+            if DEBUG_SERVER: print(f"Server: user logged in with uuid {uuid}. will wait for Username")
+
+
+
+            get_username = threading.Thread(target=self.get_username, args=(client_socket,uuid), daemon=True)
+            get_username.start()
+
+
+    """def receive(self, client_socket): #get data from client x
+        text = b""
+        end_token = False
+        while not end_token:
+            text += client_socket.recv(BUFFER_SIZE)
+            if text[-len(END_TOKEN.encode()):] == END_TOKEN.encode():  # look if the received ends with END_TOKEN token
+                end_token = True
+        if DEBUG_SERVER: print("Server debug (receiving): ",text.decode())
+        return text[:-len(END_TOKEN.encode())].decode()"""
+
+    def receive(self, client_socket, timeout=None):
+        previous_timeout = client_socket.gettimeout()
+
+        if timeout is not None:
+            client_socket.settimeout(timeout)
+
+        try:
+            text = b""
+            end_token = END_TOKEN.encode()
+
+            while not text.endswith(end_token):
+                chunk = client_socket.recv(BUFFER_SIZE)
+
+                if not chunk:
+                    raise ConnectionError("Client disconnected")
+
+                text += chunk
+
+            if DEBUG_SERVER:
+                print("Server debug (receiving): ", text.decode())
+
+            return text[:-len(end_token)].decode()
+
+        finally:
+            if timeout is not None:
+                client_socket.settimeout(previous_timeout)
+
+
+
+    def send_to_client(self, connection_socket, message):
 
         if type(message) != list:
             message = [message]
         if message[-1] != END_TOKEN:
             message.append(END_TOKEN)
-        for item in message:
-            #print(item)
-            connection_socket.sendall(struct.pack("!I",item) if utils.is_type_number(item) else item.encode())
-        self.debug_send(message)
+        try:
+            for item in message:
+                #print(item)
+                connection_socket.sendall(struct.pack("!I",item) if utils_is_type_number(item) else item.encode())
+
+            self.debug_send(message)
+        except ConnectionAbortedError:
+            if DEBUG_SERVER: print("connection aborted to user ??? cannot send: ", message )
+            return False
+        return True
+
+
+    def get_username(self, client_socket, uuid):
+        self.send_to_client(client_socket, [3,'What is your session username?'])
+        username = self.receive(client_socket)
+        self.clients[uuid].append(username)
+
+        if DEBUG_SERVER: print(f"SERVER DEBUG: uuid {uuid} is username {username}")
+
+        if self.game_rules: self.send_to_client(client_socket, [1, self.game_rules()])
+
+        if self.game_state == "Waiting":
+            self.in_game.add(uuid)
+        else:
+            self.in_lobby.add(uuid)
+
+        if DEBUG_SERVER:
+            print("Registered:", uuid)
+            print("Current in_game:", self.in_game)
+            print("Current in_lobby:", self.in_lobby)
 
 
 
 
+    def debug_send(self, what_sent):
+        if DEBUG_SERVER : print(f"debug server (send): {what_sent}")
 
+    """def receive_from_uuid(self, uuid):
+        return self.receive(self.clients[uuid][0])"""
+
+    def receive_from_uuid(self, uuid, timeout=None):
+        return self.receive(self.clients[uuid][0], timeout)
+
+    def send_to_uuid(self, uuid, message):
+        if not self.send_to_client(self.clients[uuid][0],message) and self.game_state == "Waiting":
+            self.disconnect_user(uuid, False)
+
+
+    def send_all(self, send_to_uuid: set ,message, timeout = None, balance = None):
+        uuids = list(send_to_uuid)
+        for player_uuid in uuids:
+            self.send_to_uuid(player_uuid, message + ([] if balance is None else [" . You have ",str(balance[player_uuid]), " Tokens."]))
+
+        if message[0] == 2: #2 because wait for answer back from user #can be recurssive
+            """self.server_socket.settimeout((timeout if timeout else self.TIMEOUT)+1)"""
+            response = dict()
+            missed_responses = {} #those who did not send a response back in time
+
+            def thread_get_all_input(player_uuid, store):
+                try:
+                    store[player_uuid] = self.receive_from_uuid(player_uuid, (timeout if timeout is not None else self.TIMEOUT) + 1)
+                except OSError:
+                    store[player_uuid] = None
+                    #self.disconnect_user(player_uuid)
+
+            thread_list = set()
+            for player_uuid in uuids:
+                thread_list.add(threading.Thread(target=thread_get_all_input, args=(player_uuid,response))) # gets new connections
+            for thread in thread_list:
+                thread.start()
+            for thread in thread_list:
+                thread.join()
+
+            if DEBUG_SERVER: print(f"SERVER DEBUG (sendall): responses = {response})")
+            #player did not respond back will have {uuid: ""} as answer
+            return response
 
     def move_to_lobby(self, uuid, reason = ""):
+        if uuid not in self.clients:
+            return
         if uuid in self.in_game:
             self.in_lobby.add(uuid)
             self.in_game.remove(uuid)
-        self.send_to_uuid(uuid, f"You have been moved to the lobby. {reason}")
+            self.send_to_uuid(uuid, [1, f"You have been moved to the lobby. {reason}"])
 
-    def receiving(self, client_socket): #get data from client x
-        while True:
-            text = b""
-            end_token = False
-            while not end_token:
-                text += client_socket.recv(self.BUFFER_SIZE)
-                if text[-len(END_TOKEN.encode()):] == END_TOKEN.encode():  # look if the received ends with END_TOKEN token
-                    end_token = True
-            self.receive_queue.put(text[:-len(END_TOKEN.encode())])
-            if DEBUG_SERVER: print("Server debug (receiving): ",struct.unpack("!I", text[:4]),text[4:].decode())
+
+    def send_all_in_game(self,message, remove: set  = None):
+        if remove is None:
+            remove = set()
+        self.send_all(self.in_game-remove, [1]+message)
+
+
+    def request_user_input(self, uuid, message, timout = None):
+        return self.send_all({uuid}, message, timout)[uuid]
+
+
+
+
+
+
+
+
+
+
+
 
     #before threading
     """def get_player_connections(self, server_socket):
@@ -173,59 +279,13 @@ class Server:
             self.get_uuid()
             self.clients[] = connection_socket
             print(f'New client with address {client_addr}')"""
-    def ask_user_name(self, client_socket):
-        #self.send_client(client_socket, [3,'What is your session username?'])
-        self.registering_lock.acquire()
-        return self.registering_received
+
 
     def get_uuid(self, client_socket):
         pass
 
 
-    def get_player_connections(self, server_socket): #thread that runs forever to get new connections
-        while True:
-            client_socket, client_addr = server_socket.accept()
-            #self.get_uuid(connection_socket)
-            #self.send_client(client_socket, [3])
-            thread = threading.Thread(target=self.receiving, args=(client_socket,))
-            thread.setDaemon(True)
-            thread.start()
-            self.registering_lock.acquire()
-            registered = bool(self.registering_received)  #if empty string false. else it's the user's uuid
-            """if not registered: #create account
-                    self.send_client(client_socket, [3,'You have no account registered. Do you want to register one? type "yes" for confirmation'])
-                    with self.registering_lock:
-                        self.registering_lock.acquire()
-                        if self.registering_received.lower() != "yes": 
-                            client_socket.close()
-                            return"""
-            print(f"self.registering_received: {self.registering_received}, and registered: {registered}")
-            uuid = self.database.get_uuid_data(self.registering_received if registered else None)
 
-            #if not registered:
-            print(f"The uuid is {uuid}")
-            self.send_client(client_socket, [3,uuid])
-
-            user_name = self.ask_user_name(client_socket)
-
-
-            if self.game_rules: self.send_client(client_socket,[1,self.game_rules()])
-
-            self.in_game_lock.acquire()
-            self.in_lobby_lock.acquire()
-
-            if self.game_state == "Waiting":
-                self.in_game.add(uuid)
-            else:
-                self.in_lobby.add(uuid)
-
-            self.in_game_lock.release()
-            self.in_lobby_lock.release()
-
-
-            self.clients[uuid] = client_socket, user_name, thread
-
-            if DEBUG_SERVER: print(f"Server: {'new' if not registered else ''} User {self.registering_received} logged in as {user_name}, with uuid {uuid}")
 
 
     def treating_queue(self):
@@ -237,56 +297,59 @@ class Server:
                 case 2:
                     while self.response_back_event.is_set():
                         continue #wait until response back is consumed by request_user_input()
-                    self.response_back = (request[4:36+4], request[36+4:])   # 4 token, 36 is len of uuid. final (uuid, user_message)
+                    self.response_back = (request[4:36+4].decode(), request[36+4:].decode())   # 4 token, 36 is len of uuid. final (uuid, user_message)
                     if self.ignore[self.response_back[0]] == 0:
                         self.response_back_event.set()
                     elif self.ignore[self.response_back[0]]> 0:
                         self.ignore[self.response_back[0]] -= 1
                     else:
-                        print(f"self.ignore of uuid({self.response_back[0]}) equal to {self.ignore[self.response_back[0]]}. not supposed to be negative")
+                        print(f"self.ignore of uuid({self.response_back[0].decode()}) equal to {self.ignore[self.response_back[0].decode()]}. not supposed to be negative")
 
                 case 3:
-                    self.registering_received = request[4:].decode()
-                    self.registering_lock.release()
+                    match struct.unpack('!I',request[4:8])[0]:
+                        case 1:
+                            self.registering_received = request[8:].decode()
+                            self.registering_lock.release()
+                        case 2:
+                            self.clients[request[8:8+36].decode()].append(request[8+36:].decode())
+                            if DEBUG_SERVER: print(f"uuid {request[8:8+36].decode()} is username {request[8+36:].decode()}")
+                            if self.game_state == "Waiting":
+                                self.in_game_lock.acquire()
+                                self.in_game.add(request[8:8+36].decode())
+                                self.in_game_lock.release()
+                            else:
+                                self.in_lobby_lock.acquire()
+                                self.in_lobby.add(request[8:8 + 36].decode())
+                                self.in_lobby_lock.release()
+                            if self.game_rules: self.send_to_uuid(request[8:8+36].decode(), [1, self.game_rules()])
                 case 4:
                     continue
                 case _:
                     print(f"Unrecognized request {struct.unpack('!I',request[:4])[0]} received")
 
 
-    def request_user_input_w_soket(self, user_soket, message, timout = None):
-        pass
+    def disconnect_user(self, uuid, print = True):
+        client = self.clients.pop(uuid, None)
+        self.in_game.discard(uuid)
+        self.in_lobby.discard(uuid)
 
-    def request_user_input(self, uuid, message, timout = None):
-        self.send_to_uuid(uuid, message)
-        received = None
-        try:
-            self.response_back_event.wait(timout)
-            received = self.response_back.copy()
-            self.response_back_event.clear()
-        except:
-            self.ignore[uuid] += 1
-        return received
+        if client:
+            if print:
+                try:
+                    self.send_to_client(client[0], ["You got disconnected!"])
+                except OSError:
+                    pass
+
+            client[0].close()
 
 
-    def start_server(self):
-        #with socket(AF_INET, SOCK_STREAM) as server_socket:
-        server_socket = socket(AF_INET, SOCK_STREAM)
-        self.server_soket = server_socket
-        server_socket.bind((self.host, self.port))
-        server_socket.listen(self.player_allowed)
-        #server_socket.settimeout(self.TIMEOUT)
-        print('Server is ready')  # done with step 1
 
-        #self.get_player_connections(server_socket)
-        connections = threading.Thread(target=self.get_player_connections, args=[server_socket]) #gets new connections
-        #self.receiving(server_socket)
-        #receiving = threading.Thread(target=self.receiving) #Get TCP messages sent by clients
-        treat_received_messages = threading.Thread(target=self.treating_queue)
-        connections.start()
-        treat_received_messages.start()
-        #while self.server_open:
-            #continue
+
+
+
+
+
+
 
 
 

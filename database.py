@@ -1,6 +1,8 @@
 import json
 import uuid
 
+DEBUG_DATABASE = True
+
 class Database:
     def __init__(self):
         self.data = dict()
@@ -19,26 +21,38 @@ class Database:
         while True:
             new_uuid =  str(uuid.uuid4())
             if new_uuid not in self.data:
-                self.data[new_uuid] = (1500, "User")  # tokens, role
+                self.data[new_uuid] = [1500, "User"]  # tokens, role
                 self.store_data()
                 return new_uuid
 
-    def get_bets_out_in(self, value:dict, sub = False):
-        for uuid, player_info in value.items():
-            self.data[uuid] += -player_info[0] if sub else player_info[0] # player_info[0] is the bet amount
-        self.store_data()
 
-    def get_uuid_data(self, uuid):
+    def get_bets_out_in(self, value: dict, sub=False):
+        if DEBUG_DATABASE: print("received those values as bet", value)
+        for player_uuid, player_info in value.items():
+            bet = player_info[0]
+            balance, role = self.data[player_uuid]
+            self.data[player_uuid] = [balance + (-bet if sub else bet), role]
+
+        self.store_data()
+    def is_uuid_else_generate(self, uuid):
         """
         generate new uuid data (new user) if uuid is None
         :param uuid:
         :return:
         """
-        uuid_x=uuid
         if uuid is None:
-            uuid_x = self._generate_uuid()
+            uuid = self._generate_uuid()
 
-        return uuid_x
+        return uuid
+
+    def get_balances(self, uuid):
+        return self.data[uuid][0]
+
+    def get_balances(self, uuids):
+        balances = dict()
+        for uuid in uuids:
+            balances[uuid] = self.data[uuid][0]
+        return balances
 
     def __del__(self):
         self.store_data()
